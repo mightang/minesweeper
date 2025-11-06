@@ -1,4 +1,5 @@
 import random
+import pygame
 from collections import deque
 
 class BoardState:
@@ -7,6 +8,7 @@ class BoardState:
         self.cols = cols
         self.num_mines = num_mines
 
+        self.anim = None
         self.first_move = True
         self.game_over = False
         self.victory = False
@@ -79,19 +81,24 @@ class BoardState:
             return
         
         q = deque()
-        q.append((r, c))
+        q.append((r, c, 0))
         while q:
-            cr, cc = q.popleft()
+            cr, cc, d = q.popleft()
             if self.revealed[cr][cc]:
                 continue
             self.revealed[cr][cc] = True
             self.revealed_safe += 1
 
+            if self.anim is not None:
+                n = self.adj[cr][cc]
+                with_number = (n > 0)
+                self.anim.schedule_reveal(cr, cc, d, pygame.time.get_ticks(), with_number)
+
             if self.adj[cr][cc] == 0:
                 for nr, nc in self.neighbors(cr, cc):
                     if not self.revealed[nr][nc] and not self.flagged[nr][nc]:
                         if not self.mines[nr][nc]:
-                            q.append((nr, nc))
+                            q.append((nr, nc, d + 1))
 
         total_safe = self.rows * self.cols - self.num_mines
         if self.revealed_safe == total_safe:
@@ -114,7 +121,10 @@ class BoardState:
             if not self.revealed[nr][nc] and not self.flagged[nr][nc]:
                 self.reveal(nr, nc)
 
-def count_found_mines(state: BoardState) -> int:
+    def attach_anim(self, anim):
+        self.anim = anim
+    
+def count_found_mines(state: "BoardState") -> int:
     count = 0
     for r in range(state.rows):
         for c in range(state.cols):

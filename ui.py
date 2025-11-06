@@ -8,6 +8,7 @@ from config import (
     COLOR_WIN, COLOR_LOSE
 )
 from state import count_found_mines, BoardState
+from anim import ease_out_cubic, ease_out_back
 
 # 좌표 변환
 def screen_to_cell(x : int, y : int):
@@ -27,7 +28,7 @@ def cell_to_rect(r: int, c : int) -> pygame.Rect:
     return pygame.Rect(x, y, CELL, CELL)
 
 # HUD 그리기(상단 게임 진행 바)
-def draw_hud(surf: pygame.Surface, font: pygame.font.Font, elapsed_sec: int, state: BoardState, hover_cell=None):
+def draw_hud(surf: pygame.Surface, font: pygame.font.Font, elapsed_sec: int, state: BoardState, hover_cell=None, best_time_sec = None):
     pygame.draw.rect(surf, COLOR_HUD_BG, (0, 0, WIN_W, HUD_H))
 
     title = font.render(
@@ -43,16 +44,34 @@ def draw_hud(surf: pygame.Surface, font: pygame.font.Font, elapsed_sec: int, sta
     info = font.render(info_text, True, COLOR_TEXT)
     surf.blit(info, (WIN_W - info.get_width() - 16, 16))
 
+    best_str = "--" if best_time_sec is None else f"{best_time_sec:03d} s"
+    stat3 = font.render(f"Best:{best_str}", True, COLOR_TEXT)
+    surf.blit(stat3, (WIN_W - info.get_width() - 16, 40))
+
     pygame.draw.line(surf, COLOR_GRID, (0, HUD_H - 1), (WIN_W, HUD_H - 1), 1)
 
 # 보드 그리기
 def draw_board(surf: pygame.Surface, font: pygame.font.Font, state: BoardState, hover_cell = None):
+    now = pygame.time.get_ticks()
+    rows, cols = state.rows, state.cols
+
     for r in range(ROWS):
         for c in range(COLS):
             rect = cell_to_rect(r, c)
+            base = COLOR_CELL_REVEALED if state.revealed[r][c] else COLOR_CELL_COVERED
+            pygame.draw.rect(surf, base, rect)
 
-            base_color = COLOR_CELL_REVEALED if state.revealed[r][c] else COLOR_CELL_COVERED
-            pygame.draw.rect(surf, base_color, rect)
+            if state.revealed[r][c] and state.anim is not None:
+                t = state.anim.reveal_t(r, c, now)
+                if t is not None:
+                    et = ease_out_cubic(t)
+                    cover_alpha = int((1.0 - et) * 255)
+                    if cover_alpha > 0:
+                        cover = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                        cover.fill((*COLOR_CELL_COVERED, cover_alpha))
+                        surf.blit(cover, rect.topleft)
+                    
+                    state.anim.mark_reveal_done_if_over(r, c, now)
 
             if state.revealed[r][c] or (state.game_over and state.mines[r][c]):
                 if state.mines[r][c]:
@@ -60,17 +79,37 @@ def draw_board(surf: pygame.Surface, font: pygame.font.Font, state: BoardState, 
                 else:
                     n = state.adj[r][c]
                     if n > 0:
+                        scale = 1.0
+                        if state.anim is not None:
+                            tpop = state.anim.num_pop_t(r, c, now)
+                            if tpop is not None:
+                                scale = 1.0 + 0.1 * ease_out_back(tpop)
+
                         text = font.render(str(n), True, COLOR_NUM.get(n, COLOR_TEXT))
+                        if abs(scale - 1.0) > 1e-3:
+                            tw, th = text.get_width(), text.get_height()
+                            sw, sh = int(tw * scale), int(th * scale)
+                            text = pygame.transform.smoothscale(text, (sw, sh))
                         text_rect = text.get_rect(center = rect.center)
                         surf.blit(text, text_rect)
                     else:
                         pass
             else:
                 if state.flagged[r][c]:
-                    px = rect.x + CELL // 3
-                    py = rect.y + CELL // 3
-                    flag_pts = [(px, py + CELL // 2), (px, py), (px + CELL // 2, py + CELL // 4)]
-                    pygame.draw.polygon(surf, COLOR_FLAG, flag_pts)
+                    y_offset = 0
+                    alpha = 255
+                    if state.anim is not None:
+                        tf = state.anim.flag_t(r, c, now)
+                        if tf is not None:
+                            y_offset = int((1.0 - tf) * (CELL * 0.3))
+                            alpha = int(tf * 255)
+
+                    flag_surf = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                    px = CELL // 3
+                    py = CELL // 3 + y_offset
+                    pts = [(px, py + CELL // 2), (px, py), (px + CELL // 2, py + CELL // 4)]
+                    pygame.draw.polygon(flag_surf, (*COLOR_FLAG, alpha), pts)
+                    surf.blit(flag_surf, rect.topleft)
 
                 if hover_cell is not None and (r, c) == hover_cell and not state.revealed[r][c] and not state.game_over:
                     pygame.draw.rect(surf, COLOR_HOVER, rect)
@@ -83,13 +122,14 @@ def draw_board(surf: pygame.Surface, font: pygame.font.Font, state: BoardState, 
         y = HUD_H + r * CELL
         pygame.draw.line(surf, COLOR_GRID, (0, y), (BOARD_W, y), 1)
 
-def draw_result_modal(surf:pygame.Surface, font:pygame.font.Font, state: BoardState, elapsed_sec: int, mouse_pos):
+def draw_result_modal(surf:pygame.Surface, font:pygame.font.Font, state: BoardState, elapsed_sec: int, mouse_pos, best_time_sec = None):
+
     backdrop = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
     backdrop.fill(COLOR_BACKDROP)
     surf.blit(backdrop, (0, 0))
 
     modal_w = 520
-    modal_h = 260
+    modal_h = 290
     modal_rect = pygame.Rect((WIN_W - modal_w) // 2, (WIN_H - modal_h) // 2, modal_w, modal_h)
     pygame.draw.rect(surf, COLOR_MODAL_BG, modal_rect, border_radius = 12)
 
@@ -101,9 +141,12 @@ def draw_result_modal(surf:pygame.Surface, font:pygame.font.Font, state: BoardSt
     found = count_found_mines(state)
     stat1 = font.render(f"Time: {elapsed_sec:03d} s", True, COLOR_TEXT)
     stat2 = font.render(f"Mines Found: {found} / {state.num_mines}", True, COLOR_TEXT)
+    best_str = "--" if best_time_sec is None else f"{best_time_sec:03d} s"
+    stat3 = font.render(f"Best:{best_str}", True, COLOR_TEXT)
 
     surf.blit(stat1, (modal_rect.centerx - stat1.get_width() // 2, modal_rect.y + 90))
     surf.blit(stat2, (modal_rect.centerx - stat2.get_width() // 2, modal_rect.y + 122))
+    surf.blit(stat3, (modal_rect.centerx - stat3.get_width() // 2, modal_rect.y + 154))
 
     btn_w, btn_h, gap = 180, 44, 24
     btn_y = modal_rect.y + modal_rect.height - btn_h - 28
