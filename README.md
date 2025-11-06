@@ -1,4 +1,4 @@
-<h2>Minesweeper (pygame)</h2>
+<h2>Minesweeper</h2>
 
 파이게임(Pygame) 기반 지뢰찾기<br>
 웨이브형 리빌·숫자 팝·깃발 슬라이드 애니메이션<br>
